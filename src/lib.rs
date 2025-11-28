@@ -24,7 +24,7 @@ mod x11;
 
 pub use error::{ConnError, EvalError};
 
-/// A connection to the the Sawfish window manager.
+/// A connection to the Sawfish window manager.
 pub struct Client(Inner);
 
 /// Result of a form evaluation.

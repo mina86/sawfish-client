@@ -72,7 +72,7 @@ impl Client {
         self.0.read_exact(&mut buf)?;
         let res_len = c_ulong::from_ne_bytes(buf);
         if res_len == 0 {
-            return Err(EvalError::NoResponse.into());
+            return Err(EvalError::NoResponse);
         }
         let data_len = usize::try_from(res_len - 1)
             .map_err(|_| EvalError::ResponseTooLarge(res_len - 1))?;
@@ -85,6 +85,102 @@ impl Client {
         Ok(if state == 1 { Ok(response) } else { Err(response) })
     }
 }
+
+#[cfg(test)]
+mod test_eval {
+    use std::os::unix::net::UnixStream;
+
+    use super::*;
+
+    fn server_thread(mut server: UnixStream) -> () {
+        let mut buf = [0; 32];
+        let mut pos = 0;
+        loop {
+            match server.read(&mut buf[pos..]) {
+                Ok(0) => break,
+                Ok(n) => pos += n,
+                Err(err) => {
+                    if err.kind() != std::io::ErrorKind::WouldBlock &&
+                        err.kind() != std::io::ErrorKind::TimedOut
+                    {
+                        panic!("{err}");
+                    }
+                    assert_eq!(
+                        0,
+                        pos,
+                        "Server timed out with data left: {:?}",
+                        &buf[..pos]
+                    );
+                    break;
+                }
+            }
+            if pos < 9 {
+                continue;
+            }
+
+            let len = u64::from_ne_bytes(buf[1..9].try_into().unwrap());
+            let len = usize::try_from(len).unwrap();
+            let response = match (buf[0], buf[9..].get(..len)) {
+                (_, None) => continue,
+                (0, Some(b"ok")) => Some(Ok(())),
+                (0, Some(b"err")) => Some(Err(())),
+                (1, Some(b"async")) => None,
+                (is_async, Some(form)) => panic!(
+                    "Invalid requset: is_async: {is_async}; form: {form:?}"
+                ),
+            };
+
+            if let Some(response) = response {
+                let mut buf = *b"\x09\0\0\0\0\0\0\0\xffresponse";
+                buf[8] = response.is_ok() as u8;
+                server.write_all(&buf).unwrap();
+            }
+
+            buf.copy_within(len + 9.., 0);
+            pos -= len + 9;
+        }
+    }
+
+    fn start_test(name: &str) -> (Client, std::thread::JoinHandle<()>) {
+        const SECOND: std::time::Duration = std::time::Duration::new(1, 0);
+
+        let (client, server) = UnixStream::pair().unwrap();
+        client.set_read_timeout(Some(SECOND)).unwrap();
+        client.set_write_timeout(Some(SECOND)).unwrap();
+        server.set_read_timeout(Some(SECOND)).unwrap();
+        server.set_write_timeout(Some(SECOND)).unwrap();
+
+        let server = std::thread::Builder::new()
+            .name(format!("test-{name}-server"))
+            .spawn(move || server_thread(server))
+            .unwrap();
+
+        (Client(client), server)
+    }
+
+    #[track_caller]
+    fn do_test(want: Result<&str, &str>, form: &str, is_async: bool) {
+        let (mut client, server) = start_test(form);
+        let got = client.eval(form.as_bytes(), is_async).unwrap();
+        let got = got
+            .map(|bytes| String::from_utf8(bytes).unwrap())
+            .map_err(|bytes| String::from_utf8(bytes).unwrap());
+        assert_eq!(want, got.as_deref().map_err(String::as_str));
+        client.0.shutdown(std::net::Shutdown::Both).unwrap();
+        core::mem::drop(client);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn test_eval_ok() { do_test(Ok("response"), "ok", false); }
+
+    #[test]
+    fn test_eval_err() { do_test(Err("response"), "err", false); }
+
+    #[test]
+    fn test_eval_async() { do_test(Ok(""), "async", true); }
+}
+
 
 
 /// System's canonical hostname.
