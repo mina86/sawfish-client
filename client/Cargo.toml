@@ -1,7 +1,7 @@
 [package]
 name = "sawfish-client"
 description = "A client library for communicating with Sawfish window manager."
-readme = "../README.md"
+readme = "README.md"
 version.workspace = true
 authors.workspace = true
 documentation.workspace = true
@@ -29,3 +29,6 @@ tokio-util = { version = "0.7.17", features = ["compat", "net"] }
 experimental-xcb = ["dep:xcb"]
 async = ["dep:futures-util"]
 tokio = ["async", "dep:tokio", "dep:tokio-util"]
+
+[package.metadata.docs.rs]
+all-features = true
