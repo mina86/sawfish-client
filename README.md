@@ -51,6 +51,11 @@ The crate defines the following Cargo feature:
   depends on the runtime, with `AsyncClient` that now must be done by the
   caller.
 
+* `tokio` — adds `TokioClient` type alias and `open_tokio` function which
+  simplify using the library with the Tokio async runtime.  This feature does
+  not introduce any new capabilities to `sawfish-client` but is provided for
+  convenience of Tokio users.  This feature implies `async`.
+
 * `expemirental-xcb` — adds experimental support for X11-based communication
   with Sawfish.  Normally, the library connects to Sawfish via a Unix socket.
   With this feature, if connecting to the socket fails, it tries to use

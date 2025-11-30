@@ -37,7 +37,7 @@ impl Client {
     /// Opens connection to Sawfish through a Unix socket at given location.
     pub fn open(display: &str) -> Result<Self, ConnError> {
         let path = server_path(display)?;
-        UnixStream::connect(&path)
+        UnixStream::connect(path.as_path())
             .map(Self)
             .map_err(|err| ConnError::Io(path, err))
     }
@@ -97,6 +97,20 @@ impl Client {
 /// A Unix-socket-based connection to the Sawfish server using async I/O.
 #[cfg(feature = "async")]
 pub struct AsyncClient<S>(pub S);
+
+#[cfg(feature = "tokio")]
+impl AsyncClient<tokio_util::compat::Compat<tokio::net::UnixStream>> {
+    /// Opens a connection to the Sawfish server.
+    pub async fn open(display: &str) -> Result<Self, ConnError> {
+        use tokio_util::compat::TokioAsyncReadCompatExt;
+
+        let path = server_path(display)?;
+        tokio::net::UnixStream::connect(path.as_path())
+            .await
+            .map(|socket| Self(socket.compat()))
+            .map_err(|err| ConnError::Io(path, err))
+    }
+}
 
 #[cfg(feature = "async")]
 impl<S: AsyncRead + AsyncWrite + Unpin> AsyncClient<S> {

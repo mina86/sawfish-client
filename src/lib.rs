@@ -31,10 +31,6 @@ pub use error::{ConnError, EvalError};
 /// A connection to the Sawfish window manager.
 pub struct Client(Inner);
 
-/// A connection to the Sawfish window manager.
-#[cfg(feature = "async")]
-pub struct AsyncClient<S>(unix::AsyncClient<S>);
-
 /// Result of a form evaluation.
 ///
 /// If the form was successfully evaluated, the response from the server (with
@@ -144,6 +140,51 @@ pub fn open(display: Option<&str>) -> Result<Client, ConnError> {
     Client::open(display)
 }
 
+
+/// A connection to the Sawfish window manager using asynchronous I/O.
+#[cfg(feature = "async")]
+pub struct AsyncClient<S>(unix::AsyncClient<S>);
+
+/// An alias for the [`AsyncClient`] which uses Tokio runtime Unix stream.
+///
+/// # Example
+///
+/// ```no_run
+/// use tokio_util::compat::TokioAsyncReadCompatExt;
+///
+/// async fn print_system_name() {
+///     let mut client = sawfish_client::open_tokio(None).await.unwrap();
+///     let sysname = client.eval("(system-name)").await.unwrap().unwrap();
+///     println!("{}", String::from_utf8_lossy(&sysname));
+/// }
+/// ```
+#[cfg(feature = "tokio")]
+pub type TokioClient =
+    AsyncClient<tokio_util::compat::Compat<tokio::net::UnixStream>>;
+
+#[cfg(feature = "tokio")]
+impl AsyncClient<tokio_util::compat::Compat<tokio::net::UnixStream>> {
+    /// Opens a connection to the Sawfish server using the Tokio runtime.
+    ///
+    /// The `display` argument specifies an optional display string, (such as
+    /// `":0"`).  If not provided, the `DISPLAY` environment variable is used.
+    pub async fn open(display: Option<&str>) -> Result<Self, ConnError> {
+        let display = get_display(display)?;
+        unix::AsyncClient::open(&display).await.map(Self)
+    }
+}
+
+/// Opens a connection to the Sawfish server using the Tokio runtime.
+///
+/// This is a convenience alias for [`AsyncClient::open`] with the generic
+/// argument `S` set to Tokio Unix stream type.
+#[cfg(feature = "tokio")]
+#[inline(always)]
+pub async fn open_tokio(
+    display: Option<&str>,
+) -> Result<TokioClient, ConnError> {
+    TokioClient::open(display).await
+}
 
 #[cfg(feature = "async")]
 impl<S: AsyncRead + AsyncWrite + Unpin> AsyncClient<S> {
