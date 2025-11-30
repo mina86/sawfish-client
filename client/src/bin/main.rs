@@ -31,7 +31,7 @@ fn main() -> std::process::ExitCode {
     let mut eval = |form: &[u8], is_async: bool| {
         println!("> {}", String::from_utf8_lossy(form));
         let res = if is_async {
-            conn.eval_async(form)
+            conn.send(form)
         } else {
             conn.eval(form).map(|res| {
                 let (ch, data) = match res {

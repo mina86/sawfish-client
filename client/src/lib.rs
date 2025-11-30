@@ -107,24 +107,16 @@ impl Client {
     /// side has changed (e.g. due to syntax error).  Use [`Self::eval`] instead
     /// to check whether evaluation succeeded.
     ///
-    /// Note that ‘async’ nomenclature comes from Sawfish and is not related to
-    /// Rust’s concept of `async` functions.  The form is sent to Sawfish using
-    /// blocking I/O with the difference from [`Self::eval`] being that no
-    /// response from Sawfish is read.
-    ///
     /// # Example
     ///
     /// ```no_run
     /// let mut client = sawfish_client::Client::open(None).unwrap();
-    /// match client.eval_async("(set-screen-viewport 0 0)") {
+    /// match client.send("(set-screen-viewport 0 0)") {
     ///     Ok(()) => println!("Form successfully sent"),
     ///     Err(err) => println!("Communication error: {err}")
     /// }
     /// ```
-    pub fn eval_async(
-        &mut self,
-        form: impl AsRef<[u8]>,
-    ) -> Result<(), EvalError> {
+    pub fn send(&mut self, form: impl AsRef<[u8]>) -> Result<(), EvalError> {
         match &mut self.0 {
             Inner::Unix(client) => client.eval(form.as_ref(), true).map(|_| ()),
             Inner::X11(client) => client.eval(form.as_ref(), true).map(|_| ()),

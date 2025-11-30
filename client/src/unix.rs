@@ -261,7 +261,7 @@ mod test_eval {
     fn test_eval_err() { do_test(Err("response"), "err", false); }
 
     #[test]
-    fn test_eval_async() { do_test(Ok(""), "async", true); }
+    fn test_send() { do_test(Ok(""), "async", true); }
 
     #[cfg(feature = "async")]
     #[track_caller]
@@ -311,7 +311,7 @@ mod test_eval {
 
     #[cfg(feature = "async")]
     #[test]
-    fn test_async_eval_async() { do_async_test(Ok(""), "async", true); }
+    fn test_async_send() { do_async_test(Ok(""), "async", true); }
 }
 
 
