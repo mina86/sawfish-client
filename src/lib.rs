@@ -18,6 +18,9 @@
 
 use std::borrow::Cow;
 
+#[cfg(feature = "async")]
+use futures_util::io::{AsyncRead, AsyncWrite};
+
 mod error;
 mod unix;
 #[cfg(feature = "experimental-xcb")]
@@ -27,6 +30,10 @@ pub use error::{ConnError, EvalError};
 
 /// A connection to the Sawfish window manager.
 pub struct Client(Inner);
+
+/// A connection to the Sawfish window manager.
+#[cfg(feature = "async")]
+pub struct AsyncClient<S>(unix::AsyncClient<S>);
 
 /// Result of a form evaluation.
 ///
@@ -51,15 +58,11 @@ impl Client {
     /// fails and the `experimental-xcb` Cargo feature is enabled, tries using
     /// X11 protocol to communicate with Sawfish.
     pub fn open(display: Option<&str>) -> Result<Self, ConnError> {
-        let display = display
-            .map(Cow::Borrowed)
-            .or_else(|| std::env::var("DISPLAY").map(Cow::Owned).ok())
-            .filter(|display| !display.is_empty())
-            .ok_or(ConnError::NoDisplay)?;
+        let display = get_display(display)?;
         match unix::Client::open(&display) {
-            Ok(conn) => Ok(Self(Inner::Unix(conn))),
+            Ok(client) => Ok(Self(Inner::Unix(client))),
             Err(err) => x11::Client::fallback(&display, err)
-                .map(|conn| Self(Inner::X11(conn))),
+                .map(|client| Self(Inner::X11(client))),
         }
     }
 
@@ -76,8 +79,8 @@ impl Client {
     /// # Example
     ///
     /// ```no_run
-    /// let mut conn = sawfish_client::Client::open(None).unwrap();
-    /// match conn.eval("(system-name)") {
+    /// let mut client = sawfish_client::Client::open(None).unwrap();
+    /// match client.eval("(system-name)") {
     ///     Ok(Ok(data)) => {
     ///         println!("Form evaluated to: {}",
     ///                  String::from_utf8_lossy(&data))
@@ -94,25 +97,41 @@ impl Client {
         form: impl AsRef<[u8]>,
     ) -> Result<EvalResponse, EvalError> {
         match &mut self.0 {
-            Inner::Unix(conn) => conn.eval(form.as_ref(), false),
-            Inner::X11(conn) => conn.eval(form.as_ref(), false),
+            Inner::Unix(client) => client.eval(form.as_ref(), false),
+            Inner::X11(client) => client.eval(form.as_ref(), false),
         }
     }
 
     /// Sends a Lisp `form` to the Sawfish server for evaluation but does not
     /// wait for a reply.
     ///
+    /// If there’s an error sending the `form` to the server (e.g. an I/O
+    /// error), returns an `Err(error)` value.  Otherwise, so long as the `form`
+    /// was successfully sent, returns `Ok(())` even if evaluation on the server
+    /// side has changed (e.g. due to syntax error).  Use [`Self::eval`] instead
+    /// to check whether evaluation succeeded.
+    ///
     /// Note that ‘async’ nomenclature comes from Sawfish and is not related to
     /// Rust’s concept of `async` functions.  The form is sent to Sawfish using
     /// blocking I/O with the difference from [`Self::eval`] being that no
     /// response from Sawfish is read.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// let mut client = sawfish_client::Client::open(None).unwrap();
+    /// match client.eval_async("(set-screen-viewport 0 0)") {
+    ///     Ok(()) => println!("Form successfully sent"),
+    ///     Err(err) => println!("Communication error: {err}")
+    /// }
+    /// ```
     pub fn eval_async(
         &mut self,
         form: impl AsRef<[u8]>,
     ) -> Result<(), EvalError> {
         match &mut self.0 {
-            Inner::Unix(conn) => conn.eval(form.as_ref(), true).map(|_| ()),
-            Inner::X11(conn) => conn.eval(form.as_ref(), true).map(|_| ()),
+            Inner::Unix(client) => client.eval(form.as_ref(), true).map(|_| ()),
+            Inner::X11(client) => client.eval(form.as_ref(), true).map(|_| ()),
         }
     }
 }
@@ -123,6 +142,135 @@ impl Client {
 #[inline(always)]
 pub fn open(display: Option<&str>) -> Result<Client, ConnError> {
     Client::open(display)
+}
+
+
+#[cfg(feature = "async")]
+impl<S: AsyncRead + AsyncWrite + Unpin> AsyncClient<S> {
+    /// Constructs a connection to the Sawfish server over an asynchronous Unix
+    /// socket.
+    ///
+    /// Because the creation of an asynchronous Unix socket depends on the async
+    /// runtime, responsibility to open the connection falls on the caller.  Use
+    /// [`server_path`] to determine path to the Unix Socket the Sawfish server
+    /// is (supposed to be) listening on.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use tokio_util::compat::TokioAsyncReadCompatExt;
+    ///
+    /// type TokioClient = sawfish_client::AsyncClient<
+    ///     tokio_util::compat::Compat<tokio::net::UnixStream>>;
+    ///
+    /// async fn open() -> TokioClient {
+    ///     let path = sawfish_client::server_path(None).unwrap();
+    ///     let sock = tokio::net::UnixStream::connect(path).await.unwrap();
+    ///     sawfish_client::AsyncClient::new(sock.compat())
+    /// }
+    /// ```
+    pub fn new(socket: S) -> Self { Self(unix::AsyncClient(socket)) }
+
+    /// Sends a Lisp `form` to the Sawfish server for evaluation and waits for
+    /// a reply.
+    ///
+    /// * If there’s an error sending the `form` to the server (e.g. an I/O
+    ///   error), returns an `Err(error)` value.
+    /// * Otherwise, if the `form` has been successfully sent to the server but
+    ///   evaluation failed (e.g. due to syntax error), returns `Ok(Err(data))`
+    ///   value.
+    /// * Otherwise, if the `form` has been successfully executed by the server,
+    ///   returns `Ok(Ok(data))` value.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use futures_util::{AsyncRead, AsyncWrite};
+    ///
+    /// async fn system_name<S: AsyncRead + AsyncWrite + Unpin>(
+    ///     client: &mut sawfish_client::AsyncClient<S>,
+    /// ) -> Option<String> {
+    ///     match client.eval("(system-name)").await {
+    ///         Ok(Ok(data)) => {
+    ///             Some(String::from_utf8_lossy(&data).into_owned())
+    ///         }
+    ///         Ok(Err(data)) => {
+    ///             println!("Error evaluating form: {}",
+    ///                      String::from_utf8_lossy(&data));
+    ///             None
+    ///         }
+    ///         Err(err) => {
+    ///             println!("Communication error: {err}");
+    ///             None
+    ///         }
+    ///     }
+    /// }
+    /// ```
+    pub async fn eval(
+        &mut self,
+        form: impl AsRef<[u8]>,
+    ) -> Result<EvalResponse, EvalError> {
+        self.0.eval(form.as_ref(), false).await
+    }
+
+    /// Sends a Lisp `form` to the Sawfish server for evaluation but does not
+    /// wait for a reply.
+    ///
+    /// If there’s an error sending the `form` to the server (e.g. an I/O
+    /// error), returns an `Err(error)` value.  Otherwise, so long as the `form`
+    /// was successfully sent, returns `Ok(())` even if evaluation on the server
+    /// side has changed (e.g. due to syntax error).  Use [`Self::eval`] instead
+    /// to check whether evaluation succeeded.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use futures_util::{AsyncRead, AsyncWrite};
+    ///
+    /// async fn set_screen_viewport<S: AsyncRead + AsyncWrite + Unpin>(
+    ///     client: &mut sawfish_client::AsyncClient<S>,
+    ///     x: u32,
+    ///     y: u32,
+    /// ) {
+    ///     let form = format!("(set-screen-viewport {x} {y})");
+    ///     if let Err(err) = client.send(&form).await {
+    ///         println!("Communication error: {err}");
+    ///     }
+    /// }
+    /// ```
+    pub async fn send(
+        &mut self,
+        form: impl AsRef<[u8]>,
+    ) -> Result<(), EvalError> {
+        self.0.eval(form.as_ref(), true).await.map(|_| ())
+    }
+}
+
+
+/// Returns path of the Unix socket the Sawfish server is (or should be)
+/// listening on.
+///
+/// Does not verify that the socket exists or the Sawfish server is listening on
+/// it.  This is used for opening connections with [`AsyncClient::new`].
+///
+/// The Unix socket is located in `/tmp/.sawfish-$LOGNAME` directory.
+#[cfg(feature = "async")]
+pub fn server_path(
+    display: Option<&str>,
+) -> Result<std::path::PathBuf, ConnError> {
+    get_display(display).and_then(|display| unix::server_path(&display))
+}
+
+
+/// Unwraps the option or returns value of $DISPLAY environment variable.
+fn get_display<'a>(
+    display: Option<&'a str>,
+) -> Result<std::borrow::Cow<'a, str>, ConnError> {
+    display
+        .map(Cow::Borrowed)
+        .or_else(|| std::env::var("DISPLAY").map(Cow::Owned).ok())
+        .filter(|display| !display.is_empty())
+        .ok_or(ConnError::NoDisplay)
 }
 
 

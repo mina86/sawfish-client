@@ -67,7 +67,7 @@ pub enum EvalError {
     /// `usize` is smaller than 64-bit.
     ResponseTooLarge(std::ffi::c_ulong),
     /// An I/O error during communication with the Sawfish server.
-    #[from(std::io::Error)]
+    #[from(std::io::Error, std::io::ErrorKind)]
     Io(std::io::Error),
     /// Invalid format of the window’s response property.
     #[cfg(feature = "experimental-xcb")]

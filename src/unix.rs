@@ -2,34 +2,41 @@
 // © 2025 by Michał Nazarewicz <mina86@mina86.com>
 
 use std::borrow::Cow;
-use std::ffi::{OsString, c_ulong};
+use std::ffi::OsString;
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
+
+#[cfg(feature = "async")]
+use futures_util::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use crate::{ConnError, EvalError, EvalResponse};
 
 /// A Unix-socket-based connection to the Sawfish server.
 pub struct Client(std::os::unix::net::UnixStream);
 
+/// Returns path to the Unix socket Sawfish server is listening on.
+///
+/// The path of Unix socket is `/tmp/.sawfish-{logname}/{display}` where
+/// `{logname}` is value of `LOGNAME` environment variable and `{display}`
+/// is a canonical display name.
+pub fn server_path(display: &str) -> Result<std::path::PathBuf, ConnError> {
+    let username = std::env::var_os("LOGNAME").ok_or(ConnError::NoLogname)?;
+    let path = [
+        "/tmp/.sawfish-".as_bytes(),
+        username.as_encoded_bytes(),
+        "/".as_bytes(),
+        canonical_display(display).as_bytes(),
+    ]
+    .concat();
+    // SAFETY: Concatenating Strings and OsStrings produces valid OsStrings.
+    let path = unsafe { OsString::from_encoded_bytes_unchecked(path) };
+    Ok(std::path::PathBuf::from(path))
+}
+
 impl Client {
-    /// Opens connection to Sawfish through a Unix socket.
-    ///
-    /// The path of Unix socket is `/tmp/.sawfish-{logname}/{display}` where
-    /// `{logname}` is value of `LOGNAME` environment variable and `{display}`
-    /// is a canonical display name.
+    /// Opens connection to Sawfish through a Unix socket at given location.
     pub fn open(display: &str) -> Result<Self, ConnError> {
-        let username =
-            std::env::var_os("LOGNAME").ok_or(ConnError::NoLogname)?;
-        let path = [
-            "/tmp/.sawfish-".as_bytes(),
-            username.as_encoded_bytes(),
-            "/".as_bytes(),
-            canonical_display(display).as_bytes(),
-        ]
-        .concat();
-        // SAFETY: Concatenating Strings and OsStrings produces valid OsStrings.
-        let path = unsafe { OsString::from_encoded_bytes_unchecked(path) };
-        let path = std::path::PathBuf::from(path);
+        let path = server_path(display)?;
         UnixStream::connect(&path)
             .map(Self)
             .map_err(|err| ConnError::Io(path, err))
@@ -41,7 +48,7 @@ impl Client {
         &mut self,
         form: &[u8],
         is_async: bool,
-    ) -> Result<crate::EvalResponse, EvalError> {
+    ) -> Result<EvalResponse, EvalError> {
         self.send_request(form, is_async)?;
         if is_async { Ok(Ok(Vec::new())) } else { self.read_response() }
     }
@@ -57,7 +64,7 @@ impl Client {
         is_async: bool,
     ) -> Result<(), EvalError> {
         let req_type = is_async as u8;
-        let req_len = c_ulong::try_from(form.len()).unwrap();
+        let req_len = u64::try_from(form.len()).unwrap();
         let mut buf = [0u8; 9];
         buf[0] = req_type;
         buf[1..].copy_from_slice(&req_len.to_ne_bytes());
@@ -68,9 +75,9 @@ impl Client {
 
     /// Reads response from the server.
     fn read_response(&mut self) -> Result<EvalResponse, EvalError> {
-        let mut buf = [0u8; core::mem::size_of::<c_ulong>()];
+        let mut buf = [0u8; 8];
         self.0.read_exact(&mut buf)?;
-        let res_len = c_ulong::from_ne_bytes(buf);
+        let res_len = u64::from_ne_bytes(buf);
         if res_len == 0 {
             return Err(EvalError::NoResponse);
         }
@@ -85,6 +92,65 @@ impl Client {
         Ok(if state == 1 { Ok(response) } else { Err(response) })
     }
 }
+
+
+/// A Unix-socket-based connection to the Sawfish server using async I/O.
+#[cfg(feature = "async")]
+pub struct AsyncClient<S>(pub S);
+
+#[cfg(feature = "async")]
+impl<S: AsyncRead + AsyncWrite + Unpin> AsyncClient<S> {
+    /// Sends form to the server for evaluation and waits for response if
+    /// requested.
+    pub async fn eval(
+        &mut self,
+        form: &[u8],
+        is_async: bool,
+    ) -> Result<crate::EvalResponse, EvalError> {
+        self.send_request(form, is_async).await?;
+        if is_async { Ok(Ok(Vec::new())) } else { self.read_response().await }
+    }
+
+    /// Sends request to the server.
+    ///
+    /// If `is_async` is `false`, the caller is responsible for calling
+    /// [`Self::read_response`].  Otherwise, the requests and responses will get
+    /// out of sync.
+    async fn send_request(
+        &mut self,
+        form: &[u8],
+        is_async: bool,
+    ) -> Result<(), EvalError> {
+        let req_type = is_async as u8;
+        let req_len = u64::try_from(form.len()).unwrap();
+        let mut buf = [0u8; 9];
+        buf[0] = req_type;
+        buf[1..].copy_from_slice(&req_len.to_ne_bytes());
+        let mut bufs =
+            [std::io::IoSlice::new(&buf), std::io::IoSlice::new(form)];
+        self.0.write_all_vectored(&mut bufs).await.map_err(EvalError::from)
+    }
+
+    /// Reads response from the server.
+    async fn read_response(&mut self) -> Result<EvalResponse, EvalError> {
+        let mut buf = [0u8; 8];
+        self.0.read_exact(&mut buf).await?;
+        let res_len = u64::from_ne_bytes(buf);
+        if res_len == 0 {
+            return Err(EvalError::NoResponse);
+        }
+        let data_len = usize::try_from(res_len - 1)
+            .map_err(|_| EvalError::ResponseTooLarge(res_len - 1))?;
+
+        let mut state = 0u8;
+        self.0.read_exact(core::slice::from_mut(&mut state)).await?;
+
+        let mut response = vec![0u8; data_len];
+        self.0.read_exact(&mut response).await?;
+        Ok(if state == 1 { Ok(response) } else { Err(response) })
+    }
+}
+
 
 #[cfg(test)]
 mod test_eval {
@@ -141,7 +207,7 @@ mod test_eval {
         }
     }
 
-    fn start_test(name: &str) -> (Client, std::thread::JoinHandle<()>) {
+    fn start_test(name: &str) -> (UnixStream, std::thread::JoinHandle<()>) {
         const SECOND: std::time::Duration = std::time::Duration::new(1, 0);
 
         let (client, server) = UnixStream::pair().unwrap();
@@ -155,20 +221,23 @@ mod test_eval {
             .spawn(move || server_thread(server))
             .unwrap();
 
-        (Client(client), server)
+        (client, server)
     }
 
     #[track_caller]
     fn do_test(want: Result<&str, &str>, form: &str, is_async: bool) {
-        let (mut client, server) = start_test(form);
-        let got = client.eval(form.as_bytes(), is_async).unwrap();
-        let got = got
-            .map(|bytes| String::from_utf8(bytes).unwrap())
-            .map_err(|bytes| String::from_utf8(bytes).unwrap());
-        assert_eq!(want, got.as_deref().map_err(String::as_str));
+        let (client, server) = start_test(form);
+        let mut client = Client(client);
+        let got = client.eval(form.as_bytes(), is_async);
         client.0.shutdown(std::net::Shutdown::Both).unwrap();
         core::mem::drop(client);
         server.join().unwrap();
+
+        let got = got
+            .unwrap()
+            .map(|bytes| String::from_utf8(bytes).unwrap())
+            .map_err(|bytes| String::from_utf8(bytes).unwrap());
+        assert_eq!(want, got.as_deref().map_err(String::as_str));
     }
 
     #[test]
@@ -179,6 +248,56 @@ mod test_eval {
 
     #[test]
     fn test_eval_async() { do_test(Ok(""), "async", true); }
+
+    #[cfg(feature = "async")]
+    #[track_caller]
+    fn do_async_test(want: Result<&str, &str>, form: &str, is_async: bool) {
+        use tokio_util::compat::TokioAsyncReadCompatExt;
+
+        let (client, server) = start_test(form);
+        client.set_nonblocking(true).unwrap();
+
+        let got = {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_io()
+                .build()
+                .unwrap();
+            let _guerd = rt.enter();
+
+            let client = tokio::net::UnixStream::from_std(client).unwrap();
+            let mut client = AsyncClient(client.compat());
+            rt.block_on(async {
+                let got = client.eval(form.as_bytes(), is_async).await;
+                client
+                    .0
+                    .into_inner()
+                    .into_std()
+                    .unwrap()
+                    .shutdown(std::net::Shutdown::Both)
+                    .unwrap();
+                got
+            })
+        };
+        server.join().unwrap();
+
+        let got = got
+            .unwrap()
+            .map(|bytes| String::from_utf8(bytes).unwrap())
+            .map_err(|bytes| String::from_utf8(bytes).unwrap());
+        assert_eq!(want, got.as_deref().map_err(String::as_str));
+    }
+
+    #[cfg(feature = "async")]
+    #[test]
+    fn test_async_eval_ok() { do_async_test(Ok("response"), "ok", false); }
+
+    #[cfg(feature = "async")]
+    #[test]
+    fn test_async_eval_err() { do_async_test(Err("response"), "err", false); }
+
+    #[cfg(feature = "async")]
+    #[test]
+    fn test_async_eval_async() { do_async_test(Ok(""), "async", true); }
 }
 
 

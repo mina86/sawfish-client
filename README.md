@@ -43,9 +43,16 @@ how the library functions.
 
 ## Features
 
-The crate defines one Cargo feature: `expemirental-xcb`.  It adds experimental
-support for X11-based communication with Sawfish.  Normally, the library
-connects to Sawfish via a Unix socket (located in `/tmp/.sawfish-$LOGNAME`
-directory).  With this feature enabled, if connecting to the socket fails, the
-library will try to use X11-based communication instead.  However, as per its
-name, the feature is experimental and has not been extensively tested yet.
+The crate defines the following Cargo feature:
+
+* `async` — adds `AsyncClient` type which uses `future_io` traits to support
+  asynchronous I/O.  It can be used with any async runtime so long as
+  a compatible async I/O object is provided.  Because opening the Unix socket
+  depends on the runtime, with `AsyncClient` that now must be done by the
+  caller.
+
+* `expemirental-xcb` — adds experimental support for X11-based communication
+  with Sawfish.  Normally, the library connects to Sawfish via a Unix socket.
+  With this feature, if connecting to the socket fails, it tries to use
+  X11-based communication instead.  Note that this feature is only supported
+  with synchronous client.
