@@ -14,7 +14,7 @@
 // You should have received a copy of the GNU General Public License along with
 // sawfish-client.  If not, see <http://www.gnu.org/licenses/>.
 
-#![doc = include_str!("../README.md")]
+#![doc = include_str!("../../README.md")]
 
 use std::borrow::Cow;
 

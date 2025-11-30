@@ -1,0 +1,9 @@
+[package]
+name = "tokio-client"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+
+[dependencies]
+sawfish-client = { path = "../../client", features = ["tokio"] }
+tokio = { version = "1.48.0", features = ["macros", "rt"] }
