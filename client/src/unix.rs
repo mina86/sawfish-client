@@ -63,7 +63,7 @@ impl Client {
         form: &[u8],
         is_async: bool,
     ) -> Result<(), EvalError> {
-        let req_type = is_async as u8;
+        let req_type = u8::from(is_async);
         let req_len = u64::try_from(form.len()).unwrap();
         let mut buf = [0u8; 9];
         buf[0] = req_type;
@@ -135,7 +135,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AsyncClient<S> {
         form: &[u8],
         is_async: bool,
     ) -> Result<(), EvalError> {
-        let req_type = is_async as u8;
+        let req_type = u8::from(is_async);
         let req_len = u64::try_from(form.len()).unwrap();
         let mut buf = [0u8; 9];
         buf[0] = req_type;

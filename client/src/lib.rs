@@ -14,7 +14,7 @@
 // You should have received a copy of the GNU General Public License along with
 // sawfish-client.  If not, see <http://www.gnu.org/licenses/>.
 
-#![cfg_attr(docsrs, feature(doc_auto_cfg))]
+#![cfg_attr(docsrs, feature(doc_cfg))]
 #![doc = include_str!("../README.md")]
 
 use std::borrow::Cow;
@@ -128,7 +128,7 @@ impl Client {
 /// Opens a connection to the Sawfish server.
 ///
 /// This is a convenience alias for [`Client::open`].
-#[inline(always)]
+#[inline]
 pub fn open(display: Option<&str>) -> Result<Client, ConnError> {
     Client::open(display)
 }
@@ -172,7 +172,7 @@ impl AsyncClient<tokio_util::compat::Compat<tokio::net::UnixStream>> {
 /// This is a convenience alias for [`AsyncClient::open`] with the generic
 /// argument `S` set to Tokio Unix stream type.
 #[cfg(feature = "tokio")]
-#[inline(always)]
+#[inline]
 pub async fn open_tokio(
     display: Option<&str>,
 ) -> Result<TokioClient, ConnError> {
@@ -297,9 +297,9 @@ pub fn server_path(
 
 
 /// Unwraps the option or returns value of $DISPLAY environment variable.
-fn get_display<'a>(
-    display: Option<&'a str>,
-) -> Result<std::borrow::Cow<'a, str>, ConnError> {
+fn get_display(
+    display: Option<&str>,
+) -> Result<std::borrow::Cow<'_, str>, ConnError> {
     display
         .map(Cow::Borrowed)
         .or_else(|| std::env::var("DISPLAY").map(Cow::Owned).ok())

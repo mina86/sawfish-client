@@ -134,7 +134,7 @@ impl Client {
                 PROTOCOL_X11_VERSION,
                 self.portal.resource_id(),
                 self.property.resource_id(),
-                if is_async { 0 } else { 1 },
+                u32::from(!is_async),
                 0,
             ]),
         );
@@ -184,7 +184,7 @@ impl Client {
         Ok(if success { Ok(data) } else { Err(data) })
     }
 
-    /// Loops waiting for a PropertyNotify event on the portal window.
+    /// Loops waiting for a `PropertyNotify` event on the portal window.
     fn wait_for_property_notify(&mut self) -> Result<(), xcb::Error> {
         loop {
             let event = self.conn.wait_for_event()?;

@@ -1,5 +1,5 @@
 [workspace.package]
-version = "0.2.0"
+version = "0.2.1"
 authors = ["Michal Nazarewicz <mina86@mina86.com>"]
 documentation = "https://docs.rs/sawfish-client"
 repository = "https://codeberg.org/mina86/sawfish-client"
